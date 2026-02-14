@@ -1,246 +1,190 @@
-"""Coinbase Advanced Trade API WebSocket stream handler."""
-
+"""Coinbase Advanced Trade API websocket streamer."""
 import asyncio
 import json
+import logging
 import time
 from collections import deque
-from typing import Dict, Optional, Deque
+from datetime import datetime
+from typing import Dict, Any, Optional
 
 import websockets
-from loguru import logger
+import hmac
+import hashlib
+import base64
 
 import config
 
 
-class CoinbaseStream:
-    """Handles real-time Coinbase WebSocket data streaming."""
-
+class CoinbaseStreamer:
+    """Streams real-time BTC-USD data from Coinbase Advanced Trade API."""
+    
     def __init__(self):
-        """Initialize Coinbase stream."""
+        self.logger = logging.getLogger(__name__)
         self.ws = None
         self.running = False
-        self.reconnect_count = 0
         
         # Data buffers
-        self.ticker_buffer: Deque = deque(maxlen=config.DATA_BUFFER_SIZE)
-        self.orderbook_buffer: Deque = deque(maxlen=config.DATA_BUFFER_SIZE)
-        self.trades_buffer: Deque = deque(maxlen=config.DATA_BUFFER_SIZE)
+        self.trade_buffer = deque(maxlen=config.DATA_BUFFER_SIZE)
+        self.orderbook = {'bids': deque(maxlen=config.ORDER_BOOK_DEPTH),
+                          'asks': deque(maxlen=config.ORDER_BOOK_DEPTH)}
+        self.latest_price = None
+        self.latest_timestamp = None
         
-        # Latest data
-        self.latest_ticker = None
-        self.latest_orderbook = None
-        self.latest_trade = None
-        
-        # Statistics
-        self.messages_received = 0
-        self.last_message_time = None
-
     async def start(self):
-        """Start the Coinbase WebSocket connection."""
+        """Start the websocket connection."""
         self.running = True
-        logger.info("Starting Coinbase WebSocket stream...")
+        self.logger.info("Starting Coinbase WebSocket stream...")
         
         while self.running:
             try:
                 await self._connect_and_stream()
             except Exception as e:
-                logger.error(f"Coinbase stream error: {e}")
-                if self.running:
-                    await self._handle_reconnect()
-
-    async def _connect_and_stream(self):
-        """Connect to Coinbase WebSocket and stream data."""
-        uri = config.COINBASE_WS_URL
-        
-        async with websockets.connect(uri) as websocket:
-            self.ws = websocket
-            logger.info(f"Connected to Coinbase WebSocket: {uri}")
-            
-            # Subscribe to channels
-            await self._subscribe()
-            
-            # Reset reconnect count on successful connection
-            self.reconnect_count = 0
-            
-            # Start receiving messages
-            async for message in websocket:
-                if not self.running:
-                    break
-                    
-                await self._process_message(message)
-
-    async def _subscribe(self):
-        """Subscribe to Coinbase channels."""
-        subscribe_message = {
-            "type": "subscribe",
-            "product_ids": [config.TRADING_PAIR],
-            "channels": config.COINBASE_CHANNELS,
-        }
-        
-        await self.ws.send(json.dumps(subscribe_message))
-        logger.info(f"Subscribed to Coinbase channels: {config.COINBASE_CHANNELS}")
-
-    async def _process_message(self, message: str):
-        """Process incoming WebSocket message."""
-        try:
-            data = json.loads(message)
-            msg_type = data.get("type")
-            
-            # Update statistics
-            self.messages_received += 1
-            self.last_message_time = time.time()
-            
-            # Route message to appropriate handler
-            if msg_type == "ticker":
-                await self._handle_ticker(data)
-            elif msg_type == "l2update":
-                await self._handle_orderbook_update(data)
-            elif msg_type == "match":
-                await self._handle_trade(data)
-            elif msg_type == "subscriptions":
-                logger.debug(f"Subscription confirmed: {data}")
-            elif msg_type == "error":
-                logger.error(f"Coinbase error: {data.get('message')}")
-                
-        except json.JSONDecodeError as e:
-            logger.error(f"Failed to decode message: {e}")
-        except Exception as e:
-            logger.error(f"Error processing message: {e}")
-
-    async def _handle_ticker(self, data: Dict):
-        """Handle ticker messages."""
-        ticker_data = {
-            "timestamp": time.time() * 1000,  # Convert to milliseconds
-            "price": float(data.get("price", 0)),
-            "volume_24h": float(data.get("volume_24h", 0)),
-            "best_bid": float(data.get("best_bid", 0)),
-            "best_ask": float(data.get("best_ask", 0)),
-            "product_id": data.get("product_id"),
-        }
-        
-        self.latest_ticker = ticker_data
-        self.ticker_buffer.append(ticker_data)
-        
-        logger.debug(f"Ticker: {ticker_data['price']} | Bid: {ticker_data['best_bid']} | Ask: {ticker_data['best_ask']}")
-
-    async def _handle_orderbook_update(self, data: Dict):
-        """Handle order book update messages."""
-        orderbook_data = {
-            "timestamp": time.time() * 1000,
-            "changes": data.get("changes", []),
-            "product_id": data.get("product_id"),
-        }
-        
-        self.latest_orderbook = orderbook_data
-        self.orderbook_buffer.append(orderbook_data)
-        
-        logger.debug(f"Order book update: {len(orderbook_data['changes'])} changes")
-
-    async def _handle_trade(self, data: Dict):
-        """Handle trade/match messages."""
-        trade_data = {
-            "timestamp": time.time() * 1000,
-            "trade_id": data.get("trade_id"),
-            "price": float(data.get("price", 0)),
-            "size": float(data.get("size", 0)),
-            "side": data.get("side"),
-            "product_id": data.get("product_id"),
-        }
-        
-        self.latest_trade = trade_data
-        self.trades_buffer.append(trade_data)
-        
-        logger.debug(f"Trade: {trade_data['side']} {trade_data['size']} @ {trade_data['price']}")
-
-    async def _handle_reconnect(self):
-        """Handle reconnection logic."""
-        self.reconnect_count += 1
-        
-        if self.reconnect_count > config.WS_MAX_RETRIES:
-            logger.error(f"Max reconnection attempts ({config.WS_MAX_RETRIES}) reached. Stopping.")
-            self.running = False
-            return
-        
-        wait_time = min(config.WS_RECONNECT_DELAY * self.reconnect_count, 60)
-        logger.warning(f"Reconnecting in {wait_time}s (attempt {self.reconnect_count}/{config.WS_MAX_RETRIES})...")
-        await asyncio.sleep(wait_time)
-
-    def get_latest_data(self) -> Optional[Dict]:
-        """Get the latest combined data snapshot."""
-        if not self.latest_ticker:
-            return None
-            
-        return {
-            "timestamp": self.latest_ticker["timestamp"],
-            "ticker": self.latest_ticker,
-            "orderbook": self.latest_orderbook,
-            "trade": self.latest_trade,
-        }
-
-    def get_buffer_data(self, buffer_type: str, n: int = 100) -> list:
-        """Get recent data from specified buffer.
-        
-        Args:
-            buffer_type: 'ticker', 'orderbook', or 'trades'
-            n: Number of recent items to return
-            
-        Returns:
-            List of recent data items
-        """
-        buffer_map = {
-            "ticker": self.ticker_buffer,
-            "orderbook": self.orderbook_buffer,
-            "trades": self.trades_buffer,
-        }
-        
-        buffer = buffer_map.get(buffer_type)
-        if buffer is None:
-            logger.warning(f"Unknown buffer type: {buffer_type}")
-            return []
-            
-        return list(buffer)[-n:]
-
-    def get_statistics(self) -> Dict:
-        """Get stream statistics."""
-        return {
-            "messages_received": self.messages_received,
-            "last_message_time": self.last_message_time,
-            "reconnect_count": self.reconnect_count,
-            "ticker_buffer_size": len(self.ticker_buffer),
-            "orderbook_buffer_size": len(self.orderbook_buffer),
-            "trades_buffer_size": len(self.trades_buffer),
-        }
-
+                self.logger.error(f"Coinbase stream error: {e}", exc_info=True)
+                await asyncio.sleep(5)
+    
     async def stop(self):
-        """Stop the WebSocket connection."""
-        logger.info("Stopping Coinbase WebSocket stream...")
+        """Stop the websocket connection."""
         self.running = False
-        
         if self.ws:
             await self.ws.close()
-            
-        logger.info("✅ Coinbase stream stopped")
-
-
-if __name__ == "__main__":
-    # Test the stream
-    async def test():
-        stream = CoinbaseStream()
-        
-        async def print_stats():
-            while True:
-                await asyncio.sleep(10)
-                stats = stream.get_statistics()
-                logger.info(f"Stats: {stats}")
-                
-                latest = stream.get_latest_data()
-                if latest:
-                    logger.info(f"Latest price: {latest['ticker']['price']}")
-        
-        # Run stream and stats printer
-        await asyncio.gather(
-            stream.start(),
-            print_stats(),
-        )
+        self.logger.info("Coinbase stream stopped.")
     
-    asyncio.run(test())
+    async def _connect_and_stream(self):
+        """Connect to websocket and stream data."""
+        async with websockets.connect(config.COINBASE_WS_URL) as ws:
+            self.ws = ws
+            
+            # Subscribe to channels
+            subscribe_message = self._create_subscribe_message()
+            await ws.send(json.dumps(subscribe_message))
+            
+            self.logger.info("Connected to Coinbase WebSocket")
+            
+            async for message in ws:
+                try:
+                    data = json.loads(message)
+                    await self._process_message(data)
+                except json.JSONDecodeError:
+                    self.logger.warning(f"Invalid JSON: {message}")
+                except Exception as e:
+                    self.logger.error(f"Error processing message: {e}")
+    
+    def _create_subscribe_message(self) -> Dict:
+        """Create subscription message for Coinbase websocket."""
+        timestamp = str(int(time.time()))
+        
+        message = {
+            "type": "subscribe",
+            "product_ids": [config.TRADING_PAIR],
+            "channels": [
+                "ticker",
+                "level2",
+                "matches"
+            ]
+        }
+        
+        # Add authentication if API keys are provided
+        if config.COINBASE_API_KEY and config.COINBASE_API_SECRET:
+            signature = self._create_signature(timestamp, "GET", "/users/self/verify", "")
+            message.update({
+                "signature": signature,
+                "key": config.COINBASE_API_KEY,
+                "timestamp": timestamp,
+                "passphrase": ""
+            })
+        
+        return message
+    
+    def _create_signature(self, timestamp: str, method: str, path: str, body: str) -> str:
+        """Create HMAC signature for authentication."""
+        message = timestamp + method + path + body
+        signature = hmac.new(
+            base64.b64decode(config.COINBASE_API_SECRET),
+            message.encode('utf-8'),
+            hashlib.sha256
+        )
+        return base64.b64encode(signature.digest()).decode('utf-8')
+    
+    async def _process_message(self, data: Dict):
+        """Process incoming websocket message."""
+        msg_type = data.get('type')
+        
+        if msg_type == 'ticker':
+            self._process_ticker(data)
+        elif msg_type == 'l2update':
+            self._process_l2_update(data)
+        elif msg_type == 'match':
+            self._process_match(data)
+    
+    def _process_ticker(self, data: Dict):
+        """Process ticker update."""
+        try:
+            self.latest_price = float(data['price'])
+            self.latest_timestamp = datetime.fromisoformat(data['time'].replace('Z', '+00:00'))
+        except (KeyError, ValueError) as e:
+            self.logger.warning(f"Error processing ticker: {e}")
+    
+    def _process_l2_update(self, data: Dict):
+        """Process Level 2 order book update."""
+        try:
+            changes = data.get('changes', [])
+            
+            for change in changes:
+                side, price, size = change
+                price = float(price)
+                size = float(size)
+                
+                if side == 'buy':
+                    self.orderbook['bids'].append({'price': price, 'size': size})
+                else:
+                    self.orderbook['asks'].append({'price': price, 'size': size})
+            
+            # Sort order books
+            self.orderbook['bids'] = deque(
+                sorted(self.orderbook['bids'], key=lambda x: x['price'], reverse=True)[:config.ORDER_BOOK_DEPTH]
+            )
+            self.orderbook['asks'] = deque(
+                sorted(self.orderbook['asks'], key=lambda x: x['price'])[:config.ORDER_BOOK_DEPTH]
+            )
+            
+        except (KeyError, ValueError) as e:
+            self.logger.warning(f"Error processing L2 update: {e}")
+    
+    def _process_match(self, data: Dict):
+        """Process trade match."""
+        try:
+            trade = {
+                'price': float(data['price']),
+                'size': float(data['size']),
+                'side': data['side'],
+                'timestamp': datetime.fromisoformat(data['time'].replace('Z', '+00:00'))
+            }
+            self.trade_buffer.append(trade)
+        except (KeyError, ValueError) as e:
+            self.logger.warning(f"Error processing match: {e}")
+    
+    def get_latest_data(self) -> Optional[Dict[str, Any]]:
+        """Get the latest aggregated market data."""
+        if not self.latest_price:
+            return None
+        
+        return {
+            'price': self.latest_price,
+            'timestamp': self.latest_timestamp,
+            'orderbook': {
+                'bids': list(self.orderbook['bids'])[:10],
+                'asks': list(self.orderbook['asks'])[:10]
+            },
+            'recent_trades': list(self.trade_buffer)[-100:],
+            'bid_ask_spread': self._calculate_spread()
+        }
+    
+    def _calculate_spread(self) -> float:
+        """Calculate bid-ask spread."""
+        if not self.orderbook['bids'] or not self.orderbook['asks']:
+            return 0.0
+        
+        best_bid = self.orderbook['bids'][0]['price']
+        best_ask = self.orderbook['asks'][0]['price']
+        
+        return (best_ask - best_bid) / best_bid

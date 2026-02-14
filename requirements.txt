@@ -2,15 +2,16 @@
 python-dotenv==1.0.0
 pandas==2.1.4
 numpy==1.26.2
+scipy==1.11.4
 
-# Data Ingestion
+# Trading APIs
+coinbase-advanced-py==1.3.0
+py-clob-client==0.22.0
 websockets==12.0
-aiohttp==3.9.1
-requests==2.31.0
 
-# Technical Indicators
+# Technical Analysis
 pandas-ta==0.3.14b0
-ta-lib==0.4.28  # Optional: install via conda if needed
+ta-lib==0.4.28
 
 # Machine Learning
 scikit-learn==1.3.2
@@ -19,13 +20,13 @@ lightgbm==4.1.0
 tensorflow==2.15.0
 keras==2.15.0
 
-# Reinforcement Learning
-gym==0.26.2
-stable-baselines3==2.2.1  # Optional: for advanced RL
-
-# Database
+# Data Storage
 sqlalchemy==2.0.23
-alembic==1.13.1
+pyarrow==14.0.1
+
+# Async & Networking
+aiohttp==3.9.1
+aiofiles==23.2.1
 
 # Discord Integration
 discord-webhook==1.3.0
@@ -33,33 +34,9 @@ discord-webhook==1.3.0
 # Utilities
 python-dateutil==2.8.2
 pytz==2023.3
-joblib==1.3.2
-pyyaml==6.0.1
-
-# Logging and Monitoring
-loguru==0.7.2
-rich==13.7.0
+colorama==0.4.6
+tqdm==4.66.1
 
 # Testing
 pytest==7.4.3
-pytest-asyncio==0.23.2
-pytest-cov==4.1.0
-
-# Code Quality
-black==23.12.1
-flake8==6.1.0
-mypy==1.7.1
-
-# Performance
-numba==0.58.1  # Optional: for JIT compilation
-
-# API Clients
-py-clob-client==0.20.0  # Polymarket CLOB client
-coinbase-advanced-py==1.3.0  # Coinbase Advanced Trade
-
-# Data Validation
-pydantic==2.5.3
-
-# Async Support
-asyncio==3.4.3
-aiofiles==23.2.1
+pytest-asyncio==0.21.1
